@@ -264,6 +264,11 @@ class BLEManager: NSObject, ObservableObject {
                 self.appState.availableFiles = []
                 self.appState.requestFileName = ""
                 self.appState.receivedFileContent = ""
+                
+                // Reset mode state - device is now in blank state
+                self.appState.operatingModeSet = false
+                self.appState.selectedOperatingMode = nil
+                self.appState.log("Device memory cleared - mode settings reset")
             }
         }
     }
@@ -325,7 +330,7 @@ class BLEManager: NSObject, ObservableObject {
             command["adcBufferSize"] = appState.adcBufferSize
             command["adcDebounce"] = appState.adcDebounce
             command["adcPeaksOnly"] = appState.adcPeaksOnly
-            command["sampling_rate"] = appState.samplingRate
+            command["adcSamplingRate"] = appState.samplingRate
         }
         
         do {
@@ -884,7 +889,7 @@ struct ContentView: View {
                         .frame(height: 36)
                 }
                 .buttonStyle(JuxtaButtonStyle(
-                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 0 ? .green : .blue) : .red,
+                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 0 ? .green : .gray) : .red,
                     isOperatingMode: true
                 ))
                 
@@ -899,7 +904,7 @@ struct ContentView: View {
                         .frame(height: 36)
                 }
                 .buttonStyle(JuxtaButtonStyle(
-                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 1 ? .green : .blue) : .red,
+                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 1 ? .green : .gray) : .red,
                     isOperatingMode: true
                 ))
             }
@@ -1163,7 +1168,6 @@ struct ContentView: View {
                                     .font(.system(size: 16, weight: .medium, design: .default))
                                 
                                 Picker("Sampling Rate", selection: $appState.samplingRate) {
-                                    Text("1 kHz").tag(1000)
                                     Text("10 kHz").tag(10000)
                                     Text("100 kHz").tag(100000)
                                 }
