@@ -22,7 +22,7 @@ struct HublinkUUIDs {
 class AppState: ObservableObject {
     // Removed deviceNameFilter since we're filtering by service
     @Published var isScanning = false
-    @Published var isConnected = false
+    @Published var isConnected = true
     @Published var discoveredDevices: [CBPeripheral] = []
     @Published var connectedDevice: CBPeripheral?
     @Published var terminalLog: [String] = []
@@ -49,6 +49,7 @@ class AppState: ObservableObject {
     @Published var adcBufferSize = 1000
     @Published var adcDebounce = 5000
     @Published var adcPeaksOnly = false
+    @Published var samplingRate = 10000 // 10kHz default
     
     private var clearDevicesTimer: Timer?
     private var clockTimer: Timer?
@@ -294,6 +295,7 @@ class BLEManager: NSObject, ObservableObject {
             command["adcBufferSize"] = appState.adcBufferSize
             command["adcDebounce"] = appState.adcDebounce
             command["adcPeaksOnly"] = appState.adcPeaksOnly
+            command["sampling_rate"] = appState.samplingRate
         }
         
         do {
@@ -592,6 +594,56 @@ extension DateFormatter {
     }()
 }
 
+// MARK: - Custom Button Style
+struct JuxtaButtonStyle: ButtonStyle {
+    let color: Color
+    let isDestructive: Bool
+    let isOperatingMode: Bool
+    let isSubtle: Bool
+    
+    init(color: Color = .blue, isDestructive: Bool = false, isOperatingMode: Bool = false, isSubtle: Bool = false) {
+        self.color = color
+        self.isDestructive = isDestructive
+        self.isOperatingMode = isOperatingMode
+        self.isSubtle = isSubtle
+    }
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .medium, design: .default))
+            .foregroundColor(isOperatingMode ? color : (isDestructive ? .white : .primary))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(
+                        isSubtle ? AnyShapeStyle(Color(.systemGray6)) :
+                        isDestructive ? 
+                        AnyShapeStyle(LinearGradient(colors: [color, color.opacity(0.8)], startPoint: .top, endPoint: .bottom)) :
+                        isOperatingMode ?
+                        AnyShapeStyle(Color(.systemBackground)) :
+                        AnyShapeStyle(LinearGradient(colors: [Color(.systemGray6), Color(.systemGray5)], startPoint: .top, endPoint: .bottom))
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(
+                        isOperatingMode ? color : color.opacity(0.3), 
+                        lineWidth: isOperatingMode ? 2 : 0.5
+                    )
+            )
+            .shadow(
+                color: isSubtle ? Color.black.opacity(0.1) : 
+                       isOperatingMode ? color.opacity(0.3) : color.opacity(0.2), 
+                radius: configuration.isPressed ? 1 : (isSubtle ? 1 : (isOperatingMode ? 2 : 3)), 
+                x: 0, 
+                y: configuration.isPressed ? 1 : (isSubtle ? 1 : (isOperatingMode ? 1 : 2))
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Main Content View
 struct ContentView: View {
     @StateObject private var appState = AppState()
@@ -606,6 +658,9 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 0) {
+            // Clock - always at the top
+            clockView
+            
             // Header
             headerView
             
@@ -622,6 +677,19 @@ struct ContentView: View {
             terminalView
         }
         .background(Color(.systemBackground))
+    }
+    
+    // MARK: - Clock View
+    private var clockView: some View {
+        HStack {
+            Spacer()
+            Text(appState.currentTime)
+                .font(.system(size: 16, weight: .regular, design: .monospaced))
+                .foregroundColor(.primary)
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .background(Color(.systemGray6))
     }
     
     // MARK: - Header View
@@ -656,12 +724,6 @@ struct ContentView: View {
                         .shadow(color: .blue.opacity(0.3), radius: 8, x: 0, y: 4)
                 }
             }
-            
-            // Live Clock
-            Text(appState.currentTime)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundColor(.white)
-                .padding(.top, 4)
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 16)
@@ -714,13 +776,11 @@ struct ContentView: View {
                     bleManager.disconnect()
                 }) {
                     Text("Disconnect")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
-                .foregroundColor(.red)
+                .buttonStyle(JuxtaButtonStyle(color: .red, isDestructive: true))
             }
             
             // Operating mode buttons
@@ -730,45 +790,36 @@ struct ContentView: View {
                     appState.showSettingsSheet = true
                 }) {
                     Text("Social Mode")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(
-                            appState.operatingModeSet ? 
-                                (appState.selectedOperatingMode == 0 ? Color.green : Color.clear) : 
-                                Color.red, 
-                            lineWidth: 2
-                        )
-                )
+                .buttonStyle(JuxtaButtonStyle(
+                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 0 ? .green : .blue) : .red,
+                    isOperatingMode: true
+                ))
                 
                 Button(action: {
                     appState.selectedOperatingMode = 1
                     appState.showSettingsSheet = true
                 }) {
                     Text("Electric Mode")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(
-                            appState.operatingModeSet ? 
-                                (appState.selectedOperatingMode == 1 ? Color.green : Color.clear) : 
-                                Color.red, 
-                            lineWidth: 2
-                        )
-                )
+                .buttonStyle(JuxtaButtonStyle(
+                    color: appState.operatingModeSet ? (appState.selectedOperatingMode == 1 ? .green : .blue) : .red,
+                    isOperatingMode: true
+                ))
             }
+            
+            // Section divider
+            Divider()
+                .background(Color(.systemGray4))
+                .padding(.vertical, 8)
             
             // JSON commands - single row
             HStack(spacing: 12) {
@@ -776,44 +827,49 @@ struct ContentView: View {
                     appState.showShelfModeAlert = true
                 }) {
                     Text("Shelf Mode")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
-                .foregroundColor(.orange)
+                .buttonStyle(JuxtaButtonStyle(color: .orange))
                 
                 Button(action: {
                     appState.showClearMemoryAlert = true
                 }) {
                     Text("Clear Memory")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(JuxtaButtonStyle(color: .orange))
             }
             
             // File request dropdown
-            HStack(spacing: 12) {
-                Picker("Select File", selection: $appState.requestFileName) {
-                    if appState.availableFiles.isEmpty {
-                        Text("No files available").tag("")
-                    } else {
-                        ForEach(appState.availableFiles, id: \.self) { filename in
-                            Text(filename).tag(filename)
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("\(appState.availableFiles.count) total files")
+                        .font(.system(size: 10, weight: .regular, design: .default))
+                        .foregroundColor(.secondary)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                    
+                    Picker("Select File", selection: $appState.requestFileName) {
+                        if appState.availableFiles.isEmpty {
+                            Text("No files available").tag("")
+                        } else {
+                            ForEach(appState.availableFiles, id: \.self) { filename in
+                                Text(filename).tag(filename)
+                            }
                         }
                     }
+                    .pickerStyle(MenuPickerStyle())
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .pickerStyle(MenuPickerStyle())
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
                 
                 Button(action: {
                     if !appState.requestFileName.isEmpty {
@@ -821,13 +877,12 @@ struct ContentView: View {
                     }
                 }) {
                     Text("Transfer Data")
-                        .font(.system(size: 14, weight: .medium, design: .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(JuxtaButtonStyle(color: .blue))
                 .disabled(appState.requestFileName.isEmpty || appState.availableFiles.isEmpty)
             }
             
@@ -841,21 +896,21 @@ struct ContentView: View {
                         UIPasteboard.general.string = appState.receivedFileContent
                         appState.log("✓ Copied file content to clipboard (\(appState.receivedFileContent.count) characters)")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(JuxtaButtonStyle(isSubtle: true))
                     .font(.system(size: 12, weight: .medium, design: .default))
                     .disabled(appState.receivedFileContent.isEmpty)
                     
                     Button("Share") {
                         appState.showShareSheet = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(JuxtaButtonStyle(isSubtle: true))
                     .font(.system(size: 12, weight: .medium, design: .default))
                     .disabled(appState.receivedFileContent.isEmpty)
                     
                     Button("Clear") {
                         appState.receivedFileContent = ""
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(JuxtaButtonStyle(isSubtle: true))
                     .font(.system(size: 12, weight: .medium, design: .default))
                     .disabled(appState.receivedFileContent.isEmpty)
                 }
@@ -1006,6 +1061,23 @@ struct ContentView: View {
                                 Picker("ADC Mode", selection: $appState.adcMode) {
                                     Text("Timer Bursts (0)").tag(0)
                                     Text("Threshold Events (1)").tag(1)
+                                }
+                                .pickerStyle(SegmentedPickerStyle())
+                            }
+                            
+                            // Separator
+                            Divider()
+                                .background(Color(.systemGray4))
+                                .padding(.vertical, 8)
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Sampling Rate")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                
+                                Picker("Sampling Rate", selection: $appState.samplingRate) {
+                                    Text("1 kHz").tag(1000)
+                                    Text("10 kHz").tag(10000)
+                                    Text("100 kHz").tag(100000)
                                 }
                                 .pickerStyle(SegmentedPickerStyle())
                             }
