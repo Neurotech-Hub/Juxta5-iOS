@@ -18,13 +18,25 @@ struct HublinkUUIDs {
     static let node = CBUUID(string: "57617368-5505-0001-8000-00805f9b34fb")
 }
 
+// MARK: - Device Info
+struct DiscoveredDevice: Identifiable {
+    let id = UUID()
+    let peripheral: CBPeripheral
+    var rssi: Int?
+    
+    var name: String? {
+        return peripheral.name
+    }
+}
+
 // MARK: - App State
 class AppState: ObservableObject {
     // Removed deviceNameFilter since we're filtering by service
     @Published var isScanning = false
-    @Published var isConnected = true
-    @Published var discoveredDevices: [CBPeripheral] = []
+    @Published var isConnected = false
+    @Published var discoveredDevices: [DiscoveredDevice] = []
     @Published var connectedDevice: CBPeripheral?
+    @Published var connectedDeviceRSSI: Int = 0
     @Published var terminalLog: [String] = []
     @Published var connectionStatus = "Ready"
     @Published var requestFileName = ""
@@ -53,6 +65,7 @@ class AppState: ObservableObject {
     
     private var clearDevicesTimer: Timer?
     private var clockTimer: Timer?
+    private var rssiTimer: Timer?
     
     func log(_ message: String) {
         let timestamp = DateFormatter.logFormatter.string(from: Date())
@@ -116,9 +129,21 @@ class AppState: ObservableObject {
         clockTimer = nil
     }
     
+    func startRSSIMonitoring(bleManager: BLEManager) {
+        stopRSSIMonitoring()
+        rssiTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            bleManager.readRSSI()
+        }
+    }
+    
+    func stopRSSIMonitoring() {
+        rssiTimer?.invalidate()
+        rssiTimer = nil
+    }
+    
     private func updateTime() {
         let formatter = DateFormatter()
-        formatter.dateFormat = "dd MMM yy - HH:mm:ss"
+        formatter.dateFormat = "dd MMM yy • HH:mm:ss"
         currentTime = formatter.string(from: Date())
     }
 }
@@ -275,6 +300,11 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
     
+    func readRSSI() {
+        guard let peripheral = connectedPeripheral else { return }
+        peripheral.readRSSI()
+    }
+    
     func saveSettings() {
         guard let characteristic = gatewayCharacteristic,
               let mode = appState.selectedOperatingMode else {
@@ -377,15 +407,27 @@ extension BLEManager: CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        let rssiValue = RSSI.intValue
+        
         if let name = peripheral.name {
-            if !appState.discoveredDevices.contains(where: { $0.identifier == peripheral.identifier }) {
-                appState.discoveredDevices.append(peripheral)
-                appState.log("DISCOVERED: \(name) (RSSI: \(RSSI))")
+            if let existingIndex = appState.discoveredDevices.firstIndex(where: { $0.peripheral.identifier == peripheral.identifier }) {
+                // Update existing device with new RSSI
+                appState.discoveredDevices[existingIndex].rssi = rssiValue
+            } else {
+                // Add new device
+                let discoveredDevice = DiscoveredDevice(peripheral: peripheral, rssi: rssiValue)
+                appState.discoveredDevices.append(discoveredDevice)
+                appState.log("DISCOVERED: \(name) (RSSI: \(rssiValue))")
             }
         } else {
-            if !appState.discoveredDevices.contains(where: { $0.identifier == peripheral.identifier }) {
-                appState.discoveredDevices.append(peripheral)
-                appState.log("DISCOVERED: Unnamed device \(peripheral.identifier.uuidString) (RSSI: \(RSSI))")
+            if let existingIndex = appState.discoveredDevices.firstIndex(where: { $0.peripheral.identifier == peripheral.identifier }) {
+                // Update existing device with new RSSI
+                appState.discoveredDevices[existingIndex].rssi = rssiValue
+            } else {
+                // Add new device
+                let discoveredDevice = DiscoveredDevice(peripheral: peripheral, rssi: rssiValue)
+                appState.discoveredDevices.append(discoveredDevice)
+                appState.log("DISCOVERED: Unnamed device \(peripheral.identifier.uuidString) (RSSI: \(rssiValue))")
             }
         }
     }
@@ -409,6 +451,9 @@ extension BLEManager: CBCentralManagerDelegate {
         connectedPeripheral = peripheral
         peripheral.delegate = self
         peripheral.discoverServices([HublinkUUIDs.service])
+        
+        // Start RSSI monitoring
+        appState.startRSSIMonitoring(bleManager: self)
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -436,11 +481,15 @@ extension BLEManager: CBCentralManagerDelegate {
         
         // Clear any pending timers
         appState.cancelClearDevices()
+        appState.stopRSSIMonitoring()
         
         // Clear the request filename field, available files, and file content
         appState.requestFileName = ""
         appState.availableFiles = []
         appState.receivedFileContent = ""
+        
+        // Reset RSSI
+        appState.connectedDeviceRSSI = 0
         
         // Hide share sheet if it's open
         appState.showShareSheet = false
@@ -495,6 +544,16 @@ extension BLEManager: CBPeripheralDelegate {
         
         // Check if all required characteristics are discovered and send timestamp automatically
         checkAndSendInitialTimestamp()
+    }
+    
+    func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+        if let error = error {
+            appState.log("ERROR: RSSI read failed - \(error.localizedDescription)")
+        } else {
+            DispatchQueue.main.async {
+                self.appState.connectedDeviceRSSI = RSSI.intValue
+            }
+        }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -683,13 +742,28 @@ struct ContentView: View {
     private var clockView: some View {
         HStack {
             Spacer()
-            Text(appState.currentTime)
-                .font(.system(size: 16, weight: .regular, design: .monospaced))
-                .foregroundColor(.primary)
+            HStack(spacing: 0) {
+                let components = appState.currentTime.components(separatedBy: " • ")
+                if components.count == 2 {
+                    Text(components[0])
+                        .font(.system(size: 16, weight: .regular, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Text(" • ")
+                        .font(.system(size: 16, weight: .regular, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Text(components[1])
+                        .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                        .foregroundColor(.primary)
+                } else {
+                    Text(appState.currentTime)
+                        .font(.system(size: 16, weight: .regular, design: .monospaced))
+                        .foregroundColor(.primary)
+                }
+            }
             Spacer()
         }
         .padding(.vertical, 8)
-        .background(Color(.systemGray6))
+        .background(Color(.systemBackground))
     }
     
     // MARK: - Header View
@@ -732,21 +806,27 @@ struct ContentView: View {
     // MARK: - Device List View
     private var deviceListView: some View {
         List {
-            ForEach(appState.discoveredDevices, id: \.identifier) { device in
+            ForEach(appState.discoveredDevices) { device in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(device.name ?? "Unknown")
                             .font(.system(size: 16, weight: .medium, design: .default))
                         
-                        Text(device.identifier.uuidString)
-                            .font(.system(size: 12, weight: .regular, design: .default))
-                            .foregroundColor(.secondary)
+                        if let rssi = device.rssi {
+                            Text("RSSI: \(rssi)")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("RSSI: --")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                     }
                     
                     Spacer()
                     
                     Button(action: {
-                        bleManager.connect(to: device)
+                        bleManager.connect(to: device.peripheral)
                     }) {
                         Text("Connect")
                             .font(.system(size: 14, weight: .medium, design: .default))
@@ -765,13 +845,21 @@ struct ContentView: View {
     
     // MARK: - Connected View
     private var connectedView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             // Header with disconnect
             HStack {
-                Text(appState.connectedDevice?.name ?? "Not Connected")
-                    .font(.system(size: 16, weight: .medium, design: .default))
-                    .foregroundColor(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.connectedDevice?.name ?? "Not Connected")
+                        .font(.system(size: 20, weight: .semibold, design: .default))
+                        .foregroundColor(.white)
+                    
+                    Text("RSSI: \(appState.connectedDeviceRSSI)")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                
                 Spacer()
+                
                 Button(action: {
                     bleManager.disconnect()
                 }) {
