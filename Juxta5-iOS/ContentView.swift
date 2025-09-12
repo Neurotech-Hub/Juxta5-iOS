@@ -58,7 +58,7 @@ class AppState: ObservableObject {
     // Electric Mode Settings (Mode 1) - ADC Configuration
     @Published var adcMode = 0
     @Published var adcThreshold = 100
-    @Published var adcBufferSize = 1000
+    @Published var adcBufferSize = 100
     @Published var adcDebounce = 5000
     @Published var adcPeaksOnly = false
     @Published var samplingRate = 10000 // 10kHz default
@@ -77,6 +77,22 @@ class AppState: ObservableObject {
     
     func clearLog() {
         terminalLog.removeAll()
+    }
+    
+    func resetSocialModeToDefaults() {
+        advInterval = 5
+        scanInterval = 20
+        log("Social Mode settings reset to defaults")
+    }
+    
+    func resetElectricModeToDefaults() {
+        adcMode = 0
+        adcThreshold = 100
+        adcBufferSize = 100
+        adcDebounce = 5000
+        adcPeaksOnly = false
+        samplingRate = 10000
+        log("Electric Mode settings reset to defaults")
     }
     
     func scheduleClearDevices() {
@@ -766,6 +782,18 @@ struct ContentView: View {
                 }
             }
             Spacer()
+            
+            // Debug bug icon
+            Button(action: {
+                appState.isConnected.toggle()
+                appState.log("DEBUG: Connection state toggled to \(appState.isConnected)")
+            }) {
+                Image(systemName: "ladybug.fill")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .opacity(0.5)
+            }
+            .padding(.trailing, 16)
         }
         .padding(.vertical, 8)
         .background(Color(.systemBackground))
@@ -1135,6 +1163,23 @@ struct ContentView: View {
                                         .frame(width: 40)
                                 }
                             }
+                            
+                            // Separator
+                            Divider()
+                                .background(Color(.systemGray4))
+                                .padding(.vertical, 8)
+                            
+                            // Reset to defaults button
+                            Button(action: {
+                                appState.resetSocialModeToDefaults()
+                            }) {
+                                Text("Reset to Defaults")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                    .foregroundColor(.orange)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 36)
+                            }
+                            .buttonStyle(JuxtaButtonStyle(color: .orange))
                         }
                         .padding()
                         .background(Color(.systemGray6))
@@ -1201,9 +1246,9 @@ struct ContentView: View {
                                         get: { Double(appState.adcBufferSize) },
                                         set: { 
                                             let rounded = Int(($0 / 10).rounded()) * 10
-                                            appState.adcBufferSize = max(10, min(1000, rounded))
+                                            appState.adcBufferSize = max(100, min(500, rounded))
                                         }
-                                    ), in: 10...1000, step: 10)
+                                    ), in: 100...500, step: 10)
                                     Text("\(appState.adcBufferSize)")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 50)
@@ -1233,6 +1278,23 @@ struct ContentView: View {
                                     Toggle("", isOn: $appState.adcPeaksOnly)
                                 }
                             }
+                            
+                            // Separator
+                            Divider()
+                                .background(Color(.systemGray4))
+                                .padding(.vertical, 8)
+                            
+                            // Reset to defaults button
+                            Button(action: {
+                                appState.resetElectricModeToDefaults()
+                            }) {
+                                Text("Reset to Defaults")
+                                    .font(.system(size: 16, weight: .medium, design: .default))
+                                    .foregroundColor(.orange)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 36)
+                            }
+                            .buttonStyle(JuxtaButtonStyle(color: .orange))
                         }
                         .padding()
                         .background(Color(.systemGray6))
