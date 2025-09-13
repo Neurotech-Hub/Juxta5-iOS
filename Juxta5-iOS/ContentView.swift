@@ -55,6 +55,7 @@ class AppState: ObservableObject {
     // Social Mode Settings (Mode 0)
     @Published var advInterval = 5
     @Published var scanInterval = 20
+    @Published var inactivityDoubler = false
     
     // Electric Mode Settings (Mode 1) - ADC Configuration
     @Published var adcMode = 0
@@ -83,6 +84,7 @@ class AppState: ObservableObject {
     func resetSocialModeToDefaults() {
         advInterval = 5
         scanInterval = 20
+        inactivityDoubler = false
         log("Social Mode settings reset to defaults")
     }
     
@@ -352,6 +354,7 @@ class BLEManager: NSObject, ObservableObject {
             // Social Mode - add advertising and scanning intervals
             command["advInterval"] = appState.advInterval
             command["scanInterval"] = appState.scanInterval
+            command["inactivityDoubler"] = appState.inactivityDoubler
         } else if mode == 1 {
             // Electric Mode - add ADC configuration
             command["adcMode"] = appState.adcMode
@@ -418,8 +421,8 @@ class BLEManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.sendTimestamp()
             
-            // Send file request after timestamp with a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // Send file request after timestamp with a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.sendFilenamesRequest()
             }
         }
@@ -1046,6 +1049,12 @@ struct ContentView: View {
                     .frame(height: 36)
                     .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onChange(of: appState.requestFileName) { oldValue, newValue in
+                        // Clear file content when file selection changes
+                        if oldValue != newValue {
+                            appState.receivedFileContent = ""
+                        }
+                    }
                 }
                 
                 Button(action: {
@@ -1217,6 +1226,15 @@ struct ContentView: View {
                                     Text("\(appState.scanInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 40)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Text("Double during inactivity")
+                                        .font(.system(size: 16, weight: .medium, design: .default))
+                                    Spacer()
+                                    Toggle("", isOn: $appState.inactivityDoubler)
                                 }
                             }
                             
