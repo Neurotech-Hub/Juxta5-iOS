@@ -50,6 +50,7 @@ class AppState: ObservableObject {
     @Published var operatingModeSet = false
     @Published var selectedOperatingMode: Int? = nil
     @Published var showSettingsSheet = false
+    @Published var batteryLevel: Int? = nil
     
     // Social Mode Settings (Mode 0)
     @Published var advInterval = 5
@@ -116,12 +117,14 @@ class AppState: ObservableObject {
     func createShareableFile() -> URL? {
         guard !receivedFileContent.isEmpty else { return nil }
         
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMddHHmmss"
-        let timestamp = dateFormatter.string(from: Date())
+        // Use connected device name instead of timestamp
+        let deviceName = connectedDevice?.name ?? "unknown_device"
+        let sanitizedDeviceName = deviceName.replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
         
         let requestedFilename = requestFileName.isEmpty ? "unknown" : requestFileName
-        let filename = "juxta5_file_content_\(timestamp)_\(requestedFilename).txt"
+        let filename = "\(sanitizedDeviceName)_\(requestedFilename).txt"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         
         do {
@@ -326,6 +329,16 @@ class BLEManager: NSObject, ObservableObject {
         peripheral.readRSSI()
     }
     
+    func readNodeCharacteristic() {
+        guard let characteristic = nodeCharacteristic else {
+            appState.log("ERROR: Node characteristic not available")
+            return
+        }
+        
+        connectedPeripheral?.readValue(for: characteristic)
+        appState.log("Reading node characteristic for device info...")
+    }
+    
     func saveSettings() {
         guard let characteristic = gatewayCharacteristic,
               let mode = appState.selectedOperatingMode else {
@@ -397,6 +410,9 @@ class BLEManager: NSObject, ObservableObject {
             // Still discovering characteristics, wait for next discovery
             return
         }
+        
+        // Read node characteristic first to get device info (including battery level)
+        readNodeCharacteristic()
         
         // Send timestamp automatically after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -509,8 +525,9 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.availableFiles = []
         appState.receivedFileContent = ""
         
-        // Reset RSSI
+        // Reset RSSI and battery level
         appState.connectedDeviceRSSI = 0
+        appState.batteryLevel = nil
         
         // Hide share sheet if it's open
         appState.showShareSheet = false
@@ -595,6 +612,37 @@ extension BLEManager: CBPeripheralDelegate {
         // Try to decode as UTF-8 string first (for commands/responses)
         if let string = String(data: data, encoding: .utf8) {
             appState.log("RECEIVED: \(string)")
+            
+            // Handle node characteristic response (device info JSON)
+            if characteristic.uuid == HublinkUUIDs.node {
+                do {
+                    if let jsonData = string.data(using: .utf8),
+                       let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        
+                        // Extract battery level
+                        if let battery = json["battery_level"] as? Int {
+                            DispatchQueue.main.async {
+                                self.appState.batteryLevel = battery
+                                self.appState.log("Device battery level: \(battery)%")
+                            }
+                        }
+                        
+                        // Log other device info for debugging
+                        if let firmware = json["firmware_version"] as? String {
+                            appState.log("Firmware version: \(firmware)")
+                        }
+                        if let deviceId = json["device_id"] as? String {
+                            appState.log("Device ID: \(deviceId)")
+                        }
+                        if let operatingMode = json["operating_mode"] as? Int {
+                            appState.log("Current operating mode: \(operatingMode)")
+                        }
+                    }
+                } catch {
+                    appState.log("ERROR: Failed to parse node characteristic JSON - \(error.localizedDescription)")
+                }
+                return
+            }
             
             // Handle NFF (No File Found) response
             if string.trimmingCharacters(in: .whitespacesAndNewlines) == "NFF" {
@@ -886,9 +934,17 @@ struct ContentView: View {
                         .font(.system(size: 20, weight: .semibold, design: .default))
                         .foregroundColor(.white)
                     
-                    Text("RSSI: \(appState.connectedDeviceRSSI)")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.8))
+                    HStack(spacing: 8) {
+                        Text("RSSI: \(appState.connectedDeviceRSSI)")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.8))
+                        
+                        if let battery = appState.batteryLevel {
+                            Text("Battery: \(battery)%")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                    }
                 }
                 
                 Spacer()
