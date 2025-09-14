@@ -51,6 +51,7 @@ class AppState: ObservableObject {
     @Published var selectedOperatingMode: Int? = nil
     @Published var showSettingsSheet = false
     @Published var batteryLevel: Int? = nil
+    @Published var memoryLevel: Int? = nil
     
     // Social Mode Settings (Mode 0)
     @Published var advInterval = 5
@@ -528,9 +529,10 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.availableFiles = []
         appState.receivedFileContent = ""
         
-        // Reset RSSI and battery level
+        // Reset RSSI, battery level, and memory level
         appState.connectedDeviceRSSI = 0
         appState.batteryLevel = nil
+        appState.memoryLevel = nil
         
         // Hide share sheet if it's open
         appState.showShareSheet = false
@@ -627,6 +629,14 @@ extension BLEManager: CBPeripheralDelegate {
                             DispatchQueue.main.async {
                                 self.appState.batteryLevel = battery
                                 self.appState.log("Device battery level: \(battery)%")
+                            }
+                        }
+                        
+                        // Extract memory level
+                        if let memory = json["memory_level"] as? Int {
+                            DispatchQueue.main.async {
+                                self.appState.memoryLevel = memory
+                                self.appState.log("Device memory level: \(memory)%")
                             }
                         }
                         
@@ -932,20 +942,42 @@ struct ContentView: View {
         VStack(spacing: 16) {
             // Header with disconnect
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(appState.connectedDevice?.name ?? "Not Connected")
                         .font(.system(size: 20, weight: .semibold, design: .default))
                         .foregroundColor(.white)
                     
-                    HStack(spacing: 8) {
-                        Text("RSSI: \(appState.connectedDeviceRSSI)")
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.8))
+                    // Device status row
+                    HStack(spacing: 12) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                            Text("\(appState.connectedDeviceRSSI) dB")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
                         
                         if let battery = appState.batteryLevel {
-                            Text("Battery: \(battery)%")
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.8))
+                            HStack(spacing: 4) {
+                                Image(systemName: "battery.100")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Text("\(battery)%")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        
+                        if let memory = appState.memoryLevel {
+                            HStack(spacing: 4) {
+                                Image(systemName: "internaldrive")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Text("\(memory)%")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
                         }
                     }
                 }
