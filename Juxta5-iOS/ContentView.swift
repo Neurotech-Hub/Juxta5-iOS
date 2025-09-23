@@ -50,10 +50,13 @@ class AppState: ObservableObject {
     @Published var operatingModeSet = false
     @Published var selectedOperatingMode: Int? = nil
     @Published var showSettingsSheet = false
+    @Published var batteryLevel: Int? = nil
+    @Published var memoryLevel: Int? = nil
     
     // Social Mode Settings (Mode 0)
     @Published var advInterval = 5
     @Published var scanInterval = 20
+    @Published var inactivityDoubler = false
     
     // Electric Mode Settings (Mode 1) - ADC Configuration
     @Published var adcMode = 0
@@ -82,6 +85,7 @@ class AppState: ObservableObject {
     func resetSocialModeToDefaults() {
         advInterval = 5
         scanInterval = 20
+        inactivityDoubler = false
         log("Social Mode settings reset to defaults")
     }
     
@@ -116,12 +120,14 @@ class AppState: ObservableObject {
     func createShareableFile() -> URL? {
         guard !receivedFileContent.isEmpty else { return nil }
         
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMddHHmmss"
-        let timestamp = dateFormatter.string(from: Date())
+        // Use connected device name instead of timestamp
+        let deviceName = connectedDevice?.name ?? "unknown_device"
+        let sanitizedDeviceName = deviceName.replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
         
         let requestedFilename = requestFileName.isEmpty ? "unknown" : requestFileName
-        let filename = "juxta5_file_content_\(timestamp)_\(requestedFilename).txt"
+        let filename = "\(sanitizedDeviceName)_\(requestedFilename).txt"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         
         do {
@@ -326,6 +332,16 @@ class BLEManager: NSObject, ObservableObject {
         peripheral.readRSSI()
     }
     
+    func readNodeCharacteristic() {
+        guard let characteristic = nodeCharacteristic else {
+            appState.log("ERROR: Node characteristic not available")
+            return
+        }
+        
+        connectedPeripheral?.readValue(for: characteristic)
+        appState.log("Reading node characteristic for device info...")
+    }
+    
     func saveSettings() {
         guard let characteristic = gatewayCharacteristic,
               let mode = appState.selectedOperatingMode else {
@@ -339,6 +355,7 @@ class BLEManager: NSObject, ObservableObject {
             // Social Mode - add advertising and scanning intervals
             command["advInterval"] = appState.advInterval
             command["scanInterval"] = appState.scanInterval
+            command["inactivityDoubler"] = appState.inactivityDoubler
         } else if mode == 1 {
             // Electric Mode - add ADC configuration
             command["adcMode"] = appState.adcMode
@@ -398,12 +415,15 @@ class BLEManager: NSObject, ObservableObject {
             return
         }
         
+        // Read node characteristic first to get device info (including battery level)
+        readNodeCharacteristic()
+        
         // Send timestamp automatically after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.sendTimestamp()
             
-            // Send file request after timestamp with a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // Send file request after timestamp with a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.sendFilenamesRequest()
             }
         }
@@ -509,8 +529,10 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.availableFiles = []
         appState.receivedFileContent = ""
         
-        // Reset RSSI
+        // Reset RSSI, battery level, and memory level
         appState.connectedDeviceRSSI = 0
+        appState.batteryLevel = nil
+        appState.memoryLevel = nil
         
         // Hide share sheet if it's open
         appState.showShareSheet = false
@@ -595,6 +617,45 @@ extension BLEManager: CBPeripheralDelegate {
         // Try to decode as UTF-8 string first (for commands/responses)
         if let string = String(data: data, encoding: .utf8) {
             appState.log("RECEIVED: \(string)")
+            
+            // Handle node characteristic response (device info JSON)
+            if characteristic.uuid == HublinkUUIDs.node {
+                do {
+                    if let jsonData = string.data(using: .utf8),
+                       let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        
+                        // Extract battery level
+                        if let battery = json["battery_level"] as? Int {
+                            DispatchQueue.main.async {
+                                self.appState.batteryLevel = battery
+                                self.appState.log("Device battery level: \(battery)%")
+                            }
+                        }
+                        
+                        // Extract memory level
+                        if let memory = json["memory_level"] as? Int {
+                            DispatchQueue.main.async {
+                                self.appState.memoryLevel = memory
+                                self.appState.log("Device memory level: \(memory)%")
+                            }
+                        }
+                        
+                        // Log other device info for debugging
+                        if let firmware = json["firmware_version"] as? String {
+                            appState.log("Firmware version: \(firmware)")
+                        }
+                        if let deviceId = json["device_id"] as? String {
+                            appState.log("Device ID: \(deviceId)")
+                        }
+                        if let operatingMode = json["operating_mode"] as? Int {
+                            appState.log("Current operating mode: \(operatingMode)")
+                        }
+                    }
+                } catch {
+                    appState.log("ERROR: Failed to parse node characteristic JSON - \(error.localizedDescription)")
+                }
+                return
+            }
             
             // Handle NFF (No File Found) response
             if string.trimmingCharacters(in: .whitespacesAndNewlines) == "NFF" {
@@ -881,14 +942,44 @@ struct ContentView: View {
         VStack(spacing: 16) {
             // Header with disconnect
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(appState.connectedDevice?.name ?? "Not Connected")
                         .font(.system(size: 20, weight: .semibold, design: .default))
                         .foregroundColor(.white)
                     
-                    Text("RSSI: \(appState.connectedDeviceRSSI)")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.8))
+                    // Device status row
+                    HStack(spacing: 12) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                            Text("\(appState.connectedDeviceRSSI) dB")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                        
+                        if let battery = appState.batteryLevel {
+                            HStack(spacing: 4) {
+                                Image(systemName: "battery.100")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Text("\(battery)%")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        
+                        if let memory = appState.memoryLevel {
+                            HStack(spacing: 4) {
+                                Image(systemName: "internaldrive")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Text("\(memory)%")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                    }
                 }
                 
                 Spacer()
@@ -990,6 +1081,12 @@ struct ContentView: View {
                     .frame(height: 36)
                     .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onChange(of: appState.requestFileName) { oldValue, newValue in
+                        // Clear file content when file selection changes
+                        if oldValue != newValue {
+                            appState.receivedFileContent = ""
+                        }
+                    }
                 }
                 
                 Button(action: {
@@ -1161,6 +1258,15 @@ struct ContentView: View {
                                     Text("\(appState.scanInterval)s")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 40)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Text("Double during inactivity")
+                                        .font(.system(size: 16, weight: .medium, design: .default))
+                                    Spacer()
+                                    Toggle("", isOn: $appState.inactivityDoubler)
                                 }
                             }
                             
