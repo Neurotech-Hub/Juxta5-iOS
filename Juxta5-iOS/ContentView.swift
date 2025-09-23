@@ -1263,7 +1263,7 @@ struct ContentView: View {
                                     Slider(value: Binding(
                                         get: { Double(appState.adcDebounce) },
                                         set: { appState.adcDebounce = Int($0) }
-                                    ), in: 100...10000, step: 100)
+                                    ), in: 10...5000, step: 10)
                                     Text("\(appState.adcDebounce)ms")
                                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                                         .frame(width: 70)
