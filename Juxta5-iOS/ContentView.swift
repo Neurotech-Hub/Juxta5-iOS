@@ -52,6 +52,7 @@ class AppState: ObservableObject {
     @Published var showSettingsSheet = false
     @Published var batteryLevel: Int? = nil
     @Published var memoryLevel: Int? = nil
+    @Published var firmwareVersion: String? = nil
     
     // Social Mode Settings (Mode 0)
     @Published var advInterval = 5
@@ -529,10 +530,11 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.availableFiles = []
         appState.receivedFileContent = ""
         
-        // Reset RSSI, battery level, and memory level
+        // Reset RSSI, battery level, memory level, and firmware version
         appState.connectedDeviceRSSI = 0
         appState.batteryLevel = nil
         appState.memoryLevel = nil
+        appState.firmwareVersion = nil
         
         // Hide share sheet if it's open
         appState.showShareSheet = false
@@ -640,9 +642,12 @@ extension BLEManager: CBPeripheralDelegate {
                             }
                         }
                         
-                        // Log other device info for debugging
+                        // Extract firmware version
                         if let firmware = json["firmware_version"] as? String {
-                            appState.log("Firmware version: \(firmware)")
+                            DispatchQueue.main.async {
+                                self.appState.firmwareVersion = firmware
+                                self.appState.log("Firmware version: \(firmware)")
+                            }
                         }
                         if let deviceId = json["device_id"] as? String {
                             appState.log("Device ID: \(deviceId)")
@@ -975,6 +980,17 @@ struct ContentView: View {
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.white.opacity(0.8))
                                 Text("\(memory)%")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        
+                        if let firmware = appState.firmwareVersion {
+                            HStack(spacing: 4) {
+                                Image(systemName: "cpu")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Text(firmware)
                                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                                     .foregroundColor(.white.opacity(0.8))
                             }
