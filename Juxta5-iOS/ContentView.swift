@@ -42,6 +42,9 @@ class AppState: ObservableObject {
     @Published var requestFileName = ""
     @Published var availableFiles: [String] = []
     @Published var receivedFileContent = ""
+    @Published var receivedFiles: [String: String] = [:] // Dictionary to store multiple files
+    @Published var isTransferringAllFiles = false
+    @Published var transferProgress = ""
     @Published var showClearMemoryAlert = false
     @Published var showShelfModeAlert = false
     @Published var showShareSheet = false
@@ -140,6 +143,30 @@ class AppState: ObservableObject {
         }
     }
     
+    func createShareableFiles() -> [URL] {
+        guard !receivedFiles.isEmpty else { return [] }
+        
+        var fileURLs: [URL] = []
+        let deviceName = connectedDevice?.name ?? "unknown_device"
+        let sanitizedDeviceName = deviceName.replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+        
+        for (filename, content) in receivedFiles {
+            let fullFilename = "\(sanitizedDeviceName)_\(filename).txt"
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fullFilename)
+            
+            do {
+                try content.write(to: tempURL, atomically: true, encoding: .utf8)
+                fileURLs.append(tempURL)
+            } catch {
+                log("ERROR: Failed to create shareable file \(filename) - \(error.localizedDescription)")
+            }
+        }
+        
+        return fileURLs
+    }
+    
     func startClock() {
         updateTime()
         clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -181,6 +208,9 @@ class BLEManager: NSObject, ObservableObject {
     private var nodeCharacteristic: CBCharacteristic?
     
     @Published var appState: AppState
+    private var filesToTransfer: [String] = []
+    private var currentFileIndex = 0
+    private var currentTransferFilename = ""
     
     init(appState: AppState) {
         self.appState = appState
@@ -287,6 +317,9 @@ class BLEManager: NSObject, ObservableObject {
                 self.appState.availableFiles = []
                 self.appState.requestFileName = ""
                 self.appState.receivedFileContent = ""
+                self.appState.receivedFiles.removeAll()
+                self.appState.isTransferringAllFiles = false
+                self.appState.transferProgress = ""
                 
                 // Reset mode state - device is now in blank state
                 self.appState.operatingModeSet = false
@@ -406,6 +439,74 @@ class BLEManager: NSObject, ObservableObject {
         if let data = filename.data(using: .utf8) {
             connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
             appState.log("SENT: Request file transfer for '\(filename)'")
+        }
+    }
+    
+    func startAllFilesTransfer() {
+        guard !appState.availableFiles.isEmpty else {
+            appState.log("ERROR: No files available to transfer")
+            return
+        }
+        
+        // Initialize the transfer queue
+        filesToTransfer = appState.availableFiles
+        currentFileIndex = 0
+        appState.receivedFiles.removeAll()
+        appState.isTransferringAllFiles = true
+        appState.transferProgress = "Preparing transfer..."
+        
+        // Start transferring the first file
+        transferNextFile()
+    }
+    
+    private func transferNextFile() {
+        guard currentFileIndex < filesToTransfer.count else {
+            // All files transferred
+            appState.isTransferringAllFiles = false
+            appState.transferProgress = "Transfer complete! (\(filesToTransfer.count) files)"
+            appState.log("✓ All files transferred successfully (\(filesToTransfer.count) files)")
+            
+            // Automatically show share sheet
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.appState.showShareSheet = true
+            }
+            return
+        }
+        
+        let filename = filesToTransfer[currentFileIndex]
+        currentTransferFilename = filename
+        
+        appState.transferProgress = "Transferring \(currentFileIndex + 1) of \(filesToTransfer.count): \(filename)"
+        appState.log("Transferring file \(currentFileIndex + 1)/\(filesToTransfer.count): \(filename)")
+        
+        // Clear the temporary content storage
+        appState.receivedFileContent = ""
+        
+        // Request the file
+        guard let characteristic = filenameCharacteristic else {
+            appState.log("ERROR: Filename characteristic not available")
+            appState.isTransferringAllFiles = false
+            return
+        }
+        
+        if let data = filename.data(using: .utf8) {
+            connectedPeripheral?.writeValue(data, for: characteristic, type: .withResponse)
+        }
+    }
+    
+    private func completeCurrentFileTransfer() {
+        // Store the received content for the current file
+        if !currentTransferFilename.isEmpty && !appState.receivedFileContent.isEmpty {
+            appState.receivedFiles[currentTransferFilename] = appState.receivedFileContent
+            appState.log("✓ File '\(currentTransferFilename)' saved (\(appState.receivedFileContent.count) chars)")
+        }
+        
+        // Move to next file
+        currentFileIndex += 1
+        
+        // Small delay before requesting next file
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.transferNextFile()
         }
     }
     
@@ -529,6 +630,9 @@ extension BLEManager: CBCentralManagerDelegate {
         appState.requestFileName = ""
         appState.availableFiles = []
         appState.receivedFileContent = ""
+        appState.receivedFiles.removeAll()
+        appState.isTransferringAllFiles = false
+        appState.transferProgress = ""
         
         // Reset RSSI, battery level, memory level, and firmware version
         appState.connectedDeviceRSSI = 0
@@ -674,7 +778,12 @@ extension BLEManager: CBPeripheralDelegate {
             // Handle EOF in file transfer (end of file data)
             if string.trimmingCharacters(in: .whitespacesAndNewlines) == "EOF" {
                 DispatchQueue.main.async {
-                    self.appState.log("✓ File transfer completed")
+                    if self.appState.isTransferringAllFiles {
+                        // Continue with next file in the queue
+                        self.completeCurrentFileTransfer()
+                    } else {
+                        self.appState.log("✓ File transfer completed")
+                    }
                 }
                 return
             }
@@ -695,8 +804,10 @@ extension BLEManager: CBPeripheralDelegate {
                 
                 DispatchQueue.main.async {
                     self.appState.availableFiles = files
-                    // Auto-select first file if available
-                    if let firstFile = files.first {
+                    // Auto-select "All Files" if multiple files available
+                    if files.count > 1 {
+                        self.appState.requestFileName = "ALL_FILES"
+                    } else if let firstFile = files.first {
                         self.appState.requestFileName = firstFile
                     }
                 }
@@ -1087,6 +1198,7 @@ struct ContentView: View {
                         if appState.availableFiles.isEmpty {
                             Text("No files available").tag("")
                         } else {
+                            Text("All Files").tag("ALL_FILES")
                             ForEach(appState.availableFiles, id: \.self) { filename in
                                 Text(filename).tag(filename)
                             }
@@ -1103,21 +1215,40 @@ struct ContentView: View {
                             appState.receivedFileContent = ""
                         }
                     }
+                    .disabled(appState.isTransferringAllFiles)
                 }
                 
                 Button(action: {
-                    if !appState.requestFileName.isEmpty {
+                    if appState.requestFileName == "ALL_FILES" {
+                        bleManager.startAllFilesTransfer()
+                    } else if !appState.requestFileName.isEmpty {
                         bleManager.startFileTransfer(filename: appState.requestFileName)
                     }
                 }) {
-                    Text("Transfer Data")
+                    Text(appState.requestFileName == "ALL_FILES" ? "Transfer All" : "Transfer Data")
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
                 }
                 .buttonStyle(JuxtaButtonStyle(color: .blue))
-                .disabled(appState.requestFileName.isEmpty || appState.availableFiles.isEmpty)
+                .disabled(appState.requestFileName.isEmpty || appState.availableFiles.isEmpty || appState.isTransferringAllFiles)
+            }
+            
+            // Transfer progress indicator
+            if appState.isTransferringAllFiles {
+                HStack {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                        .scaleEffect(0.8)
+                    Text(appState.transferProgress)
+                        .font(.system(size: 12, weight: .medium, design: .default))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             
             // File content display area
@@ -1191,7 +1322,15 @@ struct ContentView: View {
             Text("You haven't set an operating mode yet. The device will disconnect without a mode selected. Are you sure you want to disconnect?")
         }
         .sheet(isPresented: $appState.showShareSheet) {
-            if let fileURL = appState.createShareableFile() {
+            // Check if we have multiple files to share
+            if !appState.receivedFiles.isEmpty {
+                let fileURLs = appState.createShareableFiles()
+                if !fileURLs.isEmpty {
+                    ShareSheet(items: fileURLs, onComplete: {
+                        appState.showShareSheet = false
+                    })
+                }
+            } else if let fileURL = appState.createShareableFile() {
                 ShareSheet(items: [fileURL], onComplete: {
                     appState.showShareSheet = false
                 })
